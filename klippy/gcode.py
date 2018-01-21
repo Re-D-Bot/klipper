@@ -517,6 +517,7 @@ class GCodeParser:
         self.printer.request_exit('restart')
     cmd_FIRMWARE_RESTART_when_not_ready = True
     cmd_FIRMWARE_RESTART_help = "Restart firmware, host, and reload config"
+    cmd_FIRMWARE_RESTART_aliases = ["RESTART2"]
     def cmd_FIRMWARE_RESTART(self, params):
         self.prep_restart()
         self.printer.request_exit('firmware_restart')
