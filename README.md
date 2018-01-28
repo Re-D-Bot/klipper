@@ -1,3 +1,11 @@
+Red-Bot Project
+=======
+This is configured version of Klipper firmware, for Red-Bot CoreXY 3D printer.
+In "config" directory you can find example "red-bot.cfg" file.
+
+Klipper
+=======
+
 Welcome to the Klipper project!
 
 This project implements a 3d-printer firmware. There are two parts to
