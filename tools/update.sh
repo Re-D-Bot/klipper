@@ -2,10 +2,10 @@
 
 cd ~/klipper
 
-#git pull
 git fetch --all
 #git reset --hard origin/red-bot
 git reset --hard
+git pull
 
 #~/klipper/scripts/install-octopi.sh
 
