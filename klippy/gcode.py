@@ -1,6 +1,6 @@
 # Parse gcode commands
 #
-# Copyright (C) 2016,2017  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, re, logging, collections
@@ -17,7 +17,7 @@ class GCodeParser:
         self.printer = printer
         self.fd = fd
         # Input handling
-        self.reactor = printer.reactor
+        self.reactor = printer.get_reactor()
         self.is_processing_data = False
         self.is_fileinput = not not printer.get_start_args().get("debuginput")
         self.fd_handle = None
@@ -45,6 +45,8 @@ class GCodeParser:
         self.homing_add = [0.0, 0.0, 0.0, 0.0]
         self.speed_factor = 1. / 60.
         self.extrude_factor = 1.
+        self.move_transform = self.move_with_transform = None
+        self.position_with_transform = (lambda: [0., 0., 0., 0.])
         # G-Code state
         self.need_ack = False
         self.toolhead = self.fan = self.extruder = None
@@ -52,6 +54,12 @@ class GCodeParser:
         self.speed = 25.0
         self.axis2pos = {'X': 0, 'Y': 1, 'Z': 2, 'E': 3}
     def register_command(self, cmd, func, when_not_ready=False, desc=None):
+        if func is None:
+            if cmd in self.ready_gcode_handlers:
+                del self.ready_gcode_handlers[cmd]
+            if cmd in self.base_gcode_handlers:
+                del self.base_gcode_handlers[cmd]
+            return
         if not (len(cmd) >= 2 and not cmd[0].isupper() and cmd[1].isdigit()):
             origfunc = func
             func = lambda params: origfunc(self.get_extended_params(params))
@@ -60,33 +68,45 @@ class GCodeParser:
             self.base_gcode_handlers[cmd] = func
         if desc is not None:
             self.gcode_help[cmd] = desc
+    def set_move_transform(self, transform):
+        if self.move_transform is not None:
+            raise self.printer.config_error(
+                "G-Code move transform already specified")
+        self.move_transform = transform
+        self.move_with_transform = transform.move
+        self.position_with_transform = transform.get_position
     def stats(self, eventtime):
         return "gcodein=%d" % (self.bytes_read,)
-    def connect(self):
+    def printer_state(self, state):
+        if state == 'shutdown':
+            if not self.is_printer_ready:
+                return
+            self.is_printer_ready = False
+            self.gcode_handlers = self.base_gcode_handlers
+            self.dump_debug()
+            if self.is_fileinput:
+                self.printer.request_exit()
+            return
+        if state != 'ready':
+            return
         self.is_printer_ready = True
         self.gcode_handlers = self.ready_gcode_handlers
         # Lookup printer components
-        self.toolhead = self.printer.objects.get('toolhead')
+        self.toolhead = self.printer.lookup_object('toolhead')
+        if self.move_transform is None:
+            self.move_with_transform = self.toolhead.move
+            self.position_with_transform = self.toolhead.get_position
         extruders = extruder.get_printer_extruders(self.printer)
         if extruders:
             self.extruder = extruders[0]
             self.toolhead.set_extruder(self.extruder)
         self.heaters = [ e.get_heater() for e in extruders ]
-        self.heaters.append(self.printer.objects.get('heater_bed'))
-        self.fan = self.printer.objects.get('fan')
+        self.heaters.append(self.printer.lookup_object('heater_bed', None))
+        self.fan = self.printer.lookup_object('fan', None)
         if self.is_fileinput and self.fd_handle is None:
             self.fd_handle = self.reactor.register_fd(self.fd, self.process_data)
     def reset_last_position(self):
-        if self.toolhead is not None:
-            self.last_position = self.toolhead.get_position()
-    def do_shutdown(self):
-        if not self.is_printer_ready:
-            return
-        self.is_printer_ready = False
-        self.gcode_handlers = self.base_gcode_handlers
-        self.dump_debug()
-        if self.is_fileinput:
-            self.printer.request_exit()
+        self.last_position = self.position_with_transform()
     def motor_heater_off(self):
         if self.toolhead is None:
             return
@@ -173,6 +193,8 @@ class GCodeParser:
                 self.toolhead.wait_moves()
             self.printer.request_exit()
         self.is_processing_data = False
+    def run_script(self, script):
+        self.process_commands(script.split('\n'), need_ack=False)
     # Response handling
     def ack(self, msg=None):
         if not self.need_ack or self.is_fileinput:
@@ -305,16 +327,14 @@ class GCodeParser:
         e = extruders[index]
         if self.extruder is e:
             return
-        deactivate_gcode = self.extruder.get_activate_gcode(False)
-        self.process_commands(deactivate_gcode.split('\n'), need_ack=False)
+        self.run_script(self.extruder.get_activate_gcode(False))
         try:
             self.toolhead.set_extruder(e)
         except homing.EndstopError as e:
             raise error(str(e))
         self.extruder = e
         self.reset_last_position()
-        activate_gcode = self.extruder.get_activate_gcode(True)
-        self.process_commands(activate_gcode.split('\n'), need_ack=False)
+        self.run_script(self.extruder.get_activate_gcode(True))
     all_handlers = [
         'G1', 'G4', 'G28', 'M18', 'M400',
         'G20', 'M82', 'M83', 'G90', 'G91', 'G92', 'M206', 'M220', 'M221',
@@ -352,7 +372,7 @@ class GCodeParser:
         except ValueError as e:
             raise error("Unable to parse move '%s'" % (params['#original'],))
         try:
-            self.toolhead.move(self.last_position, self.speed)
+            self.move_with_transform(self.last_position, self.speed)
         except homing.EndstopError as e:
             raise error(str(e))
     def cmd_G4(self, params):

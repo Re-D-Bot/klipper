@@ -1,6 +1,6 @@
 # Code for coordinating events on the printer toolhead
 #
-# Copyright (C) 2016  Kevin O'Connor <kevin@koconnor.net>
+# Copyright (C) 2016-2018  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import math, logging
@@ -183,8 +183,8 @@ STALL_TIME = 0.100
 class ToolHead:
     def __init__(self, printer, config):
         self.printer = printer
-        self.reactor = printer.reactor
-        self.all_mcus = mcu.get_printer_mcus(printer)
+        self.reactor = printer.get_reactor()
+        self.all_mcus = printer.lookup_module_objects('mcu')
         self.mcu = self.all_mcus[0]
         self.max_velocity = config.getfloat('max_velocity', above=0.)
         self.max_accel = config.getfloat('max_accel', above=0.)
@@ -312,10 +312,10 @@ class ToolHead:
     # Movement commands
     def get_position(self):
         return list(self.commanded_pos)
-    def set_position(self, newpos):
+    def set_position(self, newpos, homing_axes=()):
         self._flush_lookahead()
         self.commanded_pos[:] = newpos
-        self.kin.set_position(newpos)
+        self.kin.set_position(newpos, homing_axes)
     def move(self, newpos, speed):
         speed = min(speed, self.max_velocity)
         move = Move(self, self.commanded_pos, newpos, speed)
@@ -369,12 +369,13 @@ class ToolHead:
         buffer_time = max(0., self.print_time - est_print_time)
         return "print_time=%.3f buffer_time=%.3f print_stall=%d" % (
             self.print_time, buffer_time, self.print_stall)
-    def do_shutdown(self):
-        try:
-            self.move_queue.reset()
-            self.reset_print_time()
-        except:
-            logging.exception("Exception in do_shutdown")
+    def printer_state(self, state):
+        if state == 'shutdown':
+            try:
+                self.move_queue.reset()
+                self.reset_print_time()
+            except:
+                logging.exception("Exception in toolhead shutdown")
     def get_kinematics(self):
         return self.kin
     def get_max_velocity(self):
